@@ -10,6 +10,8 @@ env:
   HOST_PROD: 127.0.0.1
   PORT_DEV: "2222"
   PORT_PROD: "2200"
+  APP_PORT: "8080"          # 🔧 port exposé côté serveur (host)
+  HEALTH_PATH: "/health"    # 🔧 chemin du healthcheck (mets "/" si tu n'en as pas)
 
 jobs:
   build-test-deploy:
@@ -87,7 +89,6 @@ jobs:
             echo "::error::Missing DEV_SSH_KEY or DEV_SSH_KEY_B64"; exit 1
           fi
           chmod 600 /tmp/id_dev
-          # Validation par ssh-keygen (échoue si format invalide ou clé chiffrée)
           ssh-keygen -yf /tmp/id_dev >/dev/null 2>&1 || { echo "::error::DEV key invalide ou chiffrée (passphrase). Fournis une clé OpenSSH non chiffrée."; exit 1; }
           ssh-add /tmp/id_dev
 
@@ -119,6 +120,7 @@ jobs:
             ssh-keyscan -p "$PORT_PROD" "$HOST_PROD" >> ~/.ssh/known_hosts || true
           fi
 
+      # Lancer le déploiement
       - name: Deploy to DEV
         if: ${{ github.ref == 'refs/heads/dev' }}
         env:
@@ -134,3 +136,16 @@ jobs:
         run: |
           ansible-playbook -i ansible/inventory/prod.ini ansible/playbooks/deploy.yml \
             --extra-vars "target_env=prod"
+
+      # -------- Smoke tests après déploiement --------
+      - name: Smoke test DEV
+        if: ${{ github.ref == 'refs/heads/dev' }}
+        run: |
+          ansible -i ansible/inventory/dev.ini web -m wait_for -a "host=127.0.0.1 port=${APP_PORT} timeout=60 state=started"
+          ansible -i ansible/inventory/dev.ini web -m uri -a "url=http://127.0.0.1:${APP_PORT}${HEALTH_PATH} status_code=200"
+
+      - name: Smoke test PROD
+        if: ${{ github.ref == 'refs/heads/main' }}
+        run: |
+          ansible -i ansible/inventory/prod.ini web -m wait_for -a "host=127.0.0.1 port=${APP_PORT} timeout=60 state=started"
+          ansible -i ansible/inventory/prod.ini web -m uri -a "url=http://127.0.0.1:${APP_PORT}${HEALTH_PATH} status_code=200"
