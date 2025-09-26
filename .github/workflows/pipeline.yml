@@ -6,7 +6,7 @@ on:
 
 env:
   # 👇 Mets ici le sous-dossier où se trouve TON package.json
-  WORKDIR: app/package.json
+  WORKDIR: app
 
 jobs:
   build-test-deploy:
