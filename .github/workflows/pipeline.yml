@@ -6,12 +6,11 @@ on:
 
 env:
   WORKDIR: app
-  HOST_DEV: 127.0.0.1
-  HOST_PROD: 127.0.0.1
+  SSH_USER: devops
   PORT_DEV: "2222"
   PORT_PROD: "2200"
-  APP_PORT: "8080"          # 🔧 port exposé côté serveur (host)
-  HEALTH_PATH: "/health"    # 🔧 chemin du healthcheck (mets "/" si tu n'en as pas)
+  APP_PORT: "8080"
+  HEALTH_PATH: "/health"
 
 jobs:
   build-test-deploy:
@@ -73,7 +72,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install ansible
 
-      # DEV: ssh-agent + clé (brute ou base64)
+      # DEV key
       - name: Start ssh-agent & add DEV key
         if: ${{ github.ref == 'refs/heads/dev' }}
         env:
@@ -89,10 +88,10 @@ jobs:
             echo "::error::Missing DEV_SSH_KEY or DEV_SSH_KEY_B64"; exit 1
           fi
           chmod 600 /tmp/id_dev
-          ssh-keygen -yf /tmp/id_dev >/dev/null 2>&1 || { echo "::error::DEV key invalide ou chiffrée (passphrase). Fournis une clé OpenSSH non chiffrée."; exit 1; }
+          ssh-keygen -yf /tmp/id_dev >/dev/null 2>&1 || { echo "::error::DEV key invalide ou chiffrée (passphrase)."; exit 1; }
           ssh-add /tmp/id_dev
 
-      # PROD: ssh-agent + clé (brute ou base64)
+      # PROD key
       - name: Start ssh-agent & add PROD key
         if: ${{ github.ref == 'refs/heads/main' }}
         env:
@@ -108,44 +107,59 @@ jobs:
             echo "::error::Missing PROD_SSH_KEY or PROD_SSH_KEY_B64"; exit 1
           fi
           chmod 600 /tmp/id_prod
-          ssh-keygen -yf /tmp/id_prod >/dev/null 2>&1 || { echo "::error::PROD key invalide ou chiffrée (passphrase). Fournis une clé OpenSSH non chiffrée."; exit 1; }
+          ssh-keygen -yf /tmp/id_prod >/dev/null 2>&1 || { echo "::error::PROD key invalide ou chiffrée (passphrase)."; exit 1; }
           ssh-add /tmp/id_prod
+
+      # Inventaire CI basé sur les hôtes RÉELS (secrets DEV_HOST/PROD_HOST)
+      - name: Generate CI inventory
+        id: ciinv
+        run: |
+          mkdir -p ansible/inventory
+          if [ "${{ github.ref }}" = "refs/heads/dev" ]; then
+            : "${{ secrets.DEV_HOST:?Missing DEV_HOST secret}}"
+            echo "[web]" > ansible/inventory/ci.ini
+            echo "${{ secrets.DEV_HOST }} ansible_user=${SSH_USER} ansible_port=${PORT_DEV}" >> ansible/inventory/ci.ini
+          else
+            : "${{ secrets.PROD_HOST:?Missing PROD_HOST secret}}"
+            echo "[web]" > ansible/inventory/ci.ini
+            echo "${{ secrets.PROD_HOST }} ansible_user=${SSH_USER} ansible_port=${PORT_PROD}" >> ansible/inventory/ci.ini
+          fi
+          echo "path=ansible/inventory/ci.ini" >> "$GITHUB_OUTPUT"
+          echo "== Generated inventory ==" && cat ansible/inventory/ci.ini
 
       - name: Seed known_hosts
         run: |
           mkdir -p ~/.ssh
           if [ "${{ github.ref }}" = "refs/heads/dev" ]; then
-            ssh-keyscan -p "$PORT_DEV" "$HOST_DEV" >> ~/.ssh/known_hosts || true
+            ssh-keyscan -p "${PORT_DEV}" "${{ secrets.DEV_HOST }}" >> ~/.ssh/known_hosts || true
           else
-            ssh-keyscan -p "$PORT_PROD" "$HOST_PROD" >> ~/.ssh/known_hosts || true
+            ssh-keyscan -p "${PORT_PROD}" "${{ secrets.PROD_HOST }}" >> ~/.ssh/known_hosts || true
           fi
 
-      # Lancer le déploiement
+      # Déploiement
       - name: Deploy to DEV
         if: ${{ github.ref == 'refs/heads/dev' }}
         env:
           ANSIBLE_HOST_KEY_CHECKING: 'False'
         run: |
-          ansible-playbook -i ansible/inventory/dev.ini ansible/playbooks/deploy.yml \
-            --extra-vars "target_env=dev"
+          ansible-playbook -i "${{ steps.ciinv.outputs.path }}" ansible/playbooks/deploy.yml --extra-vars "target_env=dev"
 
       - name: Deploy to PROD
         if: ${{ github.ref == 'refs/heads/main' }}
         env:
           ANSIBLE_HOST_KEY_CHECKING: 'False'
         run: |
-          ansible-playbook -i ansible/inventory/prod.ini ansible/playbooks/deploy.yml \
-            --extra-vars "target_env=prod"
+          ansible-playbook -i "${{ steps.ciinv.outputs.path }}" ansible/playbooks/deploy.yml --extra-vars "target_env=prod"
 
-      # -------- Smoke tests après déploiement ---------------
+      # Smoke tests (lance le test DEPUIS le serveur distant sur 127.0.0.1:${APP_PORT})
       - name: Smoke test DEV
         if: ${{ github.ref == 'refs/heads/dev' }}
         run: |
-          ansible -i ansible/inventory/dev.ini web -m wait_for -a "host=127.0.0.1 port=${APP_PORT} timeout=60 state=started"
-          ansible -i ansible/inventory/dev.ini web -m uri -a "url=http://127.0.0.1:${APP_PORT}${HEALTH_PATH} status_code=200"
+          ansible -i "${{ steps.ciinv.outputs.path }}" web -m wait_for -a "host=127.0.0.1 port=${APP_PORT} timeout=60 state=started"
+          ansible -i "${{ steps.ciinv.outputs.path }}" web -m uri -a "url=http://127.0.0.1:${APP_PORT}${HEALTH_PATH} status_code=200"
 
       - name: Smoke test PROD
         if: ${{ github.ref == 'refs/heads/main' }}
         run: |
-          ansible -i ansible/inventory/prod.ini web -m wait_for -a "host=127.0.0.1 port=${APP_PORT} timeout=60 state=started"
-          ansible -i ansible/inventory/prod.ini web -m uri -a "url=http://127.0.0.1:${APP_PORT}${HEALTH_PATH} status_code=200"
+          ansible -i "${{ steps.ciinv.outputs.path }}" web -m wait_for -a "host=127.0.0.1 port=${APP_PORT} timeout=60 state=started"
+          ansible -i "${{ steps.ciinv.outputs.path }}" web -m uri -a "url=http://127.0.0.1:${APP_PORT}${HEALTH_PATH} status_code=200"
