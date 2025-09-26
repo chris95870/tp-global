@@ -1,0 +1,37 @@
+---
+- name: Install deps
+  become: true
+  apt:
+    name: [git, curl, nginx, nodejs, npm]
+    state: present
+    update_cache: yes
+
+- name: Ensure nginx running
+  become: true
+  service:
+    name: nginx
+    state: started
+    enabled: yes
+
+- name: Deploy source repo
+  become: true
+  git:
+    repo: "{{ app_repo_url }}"
+    dest: "/opt/app"
+    version: "{{ app_branch }}"
+    force: yes
+
+- name: Build app
+  become: true
+  args:
+    chdir: /opt/app/app
+  shell: npm install && npm run build
+
+- name: Publish to nginx
+  become: true
+  copy:
+    src: /opt/app/app/dist/
+    dest: /var/www/html/
+    owner: www-data
+    group: www-data
+    mode: "0644"

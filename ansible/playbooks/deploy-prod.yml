@@ -1,0 +1,7 @@
+---
+- hosts: web
+  vars:
+    app_repo_url: "https://github.com/USER/REPO.git"
+    app_branch: "main"
+  roles:
+    - app
