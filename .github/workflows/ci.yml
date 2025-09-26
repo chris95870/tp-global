@@ -6,8 +6,9 @@ on:
   pull_request:
     branches: [ main ]
 
+# Change "app" si ton code est ailleurs (., frontend, web, etc.)
 env:
-  WORKDIR: app   # ⬅️ Mets ici ton sous-dossier (ex: app, frontend, web)
+  WORKDIR: app
 
 jobs:
   build:
