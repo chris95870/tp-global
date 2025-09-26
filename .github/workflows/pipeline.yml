@@ -18,24 +18,12 @@ jobs:
       contents: read
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Debug paths
-        run: |
-          echo "PWD=$(pwd)"
-          echo "WORKDIR=$WORKDIR"
-          ls -la
-          ls -la "$WORKDIR" || true
+      - uses: actions/checkout@v4
 
       - name: Detect lockfile
         id: lf
         run: |
-          if [ -f "$WORKDIR/package-lock.json" ]; then
-            echo "found=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "found=false" >> "$GITHUB_OUTPUT"
-          fi
+          [ -f "$WORKDIR/package-lock.json" ] && echo "found=true" >> "$GITHUB_OUTPUT" || echo "found=false" >> "$GITHUB_OUTPUT"
 
       - name: Setup Node (with cache)
         if: ${{ steps.lf.outputs.found == 'true' }}
@@ -74,8 +62,7 @@ jobs:
         run: npm run build --if-present
 
       # -------- Déploiement Ansible --------
-      - name: Setup Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.x'
 
@@ -84,38 +71,45 @@ jobs:
           python -m pip install --upgrade pip
           pip install ansible
 
-      # 🔐 Démarrage ssh-agent + ajout de la clé DEV (branche dev)
+      # 🔐 DEV: ssh-agent + clé (support brut OU base64)
       - name: Start ssh-agent & add DEV key
         if: ${{ github.ref == 'refs/heads/dev' }}
         env:
           DEV_SSH_KEY: ${{ secrets.DEV_SSH_KEY }}
+          DEV_SSH_KEY_B64: ${{ secrets.DEV_SSH_KEY_B64 }}
         run: |
-          if [ -z "$DEV_SSH_KEY" ]; then
-            echo "::error::Missing secret DEV_SSH_KEY"
-            exit 1
-          fi
           eval "$(ssh-agent -s)"
-          # Écrit la clé, supprime les \r (copie Windows), fixe les permissions
-          printf '%s\n' "$DEV_SSH_KEY" | tr -d '\r' > /tmp/id_dev
+          if [ -n "$DEV_SSH_KEY_B64" ]; then
+            echo "$DEV_SSH_KEY_B64" | base64 -d > /tmp/id_dev || { echo "::error::Base64 invalide pour DEV_SSH_KEY_B64"; exit 1; }
+          elif [ -n "$DEV_SSH_KEY" ]; then
+            printf '%s\n' "$DEV_SSH_KEY" | tr -d '\r' > /tmp/id_dev
+          else
+            echo "::error::Missing DEV_SSH_KEY or DEV_SSH_KEY_B64"; exit 1
+          fi
           chmod 600 /tmp/id_dev
-          # (Optionnel) vérifie l'entête
-          head -n1 /tmp/id_dev | grep -E 'BEGIN (OPENSSH|RSA) PRIVATE KEY' >/dev/null || { echo "::error::DEV_SSH_KEY: format invalide"; exit 1; }
+          head -n1 /tmp/id_dev | grep -E 'BEGIN .*PRIVATE KEY' >/dev/null || { echo "::error::DEV key: en-tête invalide (attendu: BEGIN .* PRIVATE KEY)"; exit 1; }
+          # Refuse les clés chiffrées (non interactif)
+          grep -q 'ENCRYPTED' /tmp/id_dev && { echo "::error::DEV key est chiffrée (passphrase). Fournis une clé sans passphrase."; exit 1; }
           ssh-add /tmp/id_dev
 
-      # 🔐 Démarrage ssh-agent + ajout de la clé PROD (branche main)
+      # 🔐 PROD: ssh-agent + clé (support brut OU base64)
       - name: Start ssh-agent & add PROD key
         if: ${{ github.ref == 'refs/heads/main' }}
         env:
           PROD_SSH_KEY: ${{ secrets.PROD_SSH_KEY }}
+          PROD_SSH_KEY_B64: ${{ secrets.PROD_SSH_KEY_B64 }}
         run: |
-          if [ -z "$PROD_SSH_KEY" ]; then
-            echo "::error::Missing secret PROD_SSH_KEY"
-            exit 1
-          fi
           eval "$(ssh-agent -s)"
-          printf '%s\n' "$PROD_SSH_KEY" | tr -d '\r' > /tmp/id_prod
+          if [ -n "$PROD_SSH_KEY_B64" ]; then
+            echo "$PROD_SSH_KEY_B64" | base64 -d > /tmp/id_prod || { echo "::error::Base64 invalide pour PROD_SSH_KEY_B64"; exit 1; }
+          elif [ -n "$PROD_SSH_KEY" ]; then
+            printf '%s\n' "$PROD_SSH_KEY" | tr -d '\r' > /tmp/id_prod
+          else
+            echo "::error::Missing PROD_SSH_KEY or PROD_SSH_KEY_B64"; exit 1
+          fi
           chmod 600 /tmp/id_prod
-          head -n1 /tmp/id_prod | grep -E 'BEGIN (OPENSSH|RSA) PRIVATE KEY' >/dev/null || { echo "::error::PROD_SSH_KEY: format invalide"; exit 1; }
+          head -n1 /tmp/id_prod | grep -E 'BEGIN .*PRIVATE KEY' >/dev/null || { echo "::error::PROD key: en-tête invalide (attendu: BEGIN .* PRIVATE KEY)"; exit 1; }
+          grep -q 'ENCRYPTED' /tmp/id_prod && { echo "::error::PROD key est chiffrée (passphrase). Fournis une clé sans passphrase."; exit 1; }
           ssh-add /tmp/id_prod
 
       - name: Seed known_hosts
