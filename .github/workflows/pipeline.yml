@@ -137,7 +137,7 @@ jobs:
           ansible-playbook -i ansible/inventory/prod.ini ansible/playbooks/deploy.yml \
             --extra-vars "target_env=prod"
 
-      # -------- Smoke tests après déploiement --------
+      # -------- Smoke tests après déploiement ---------------
       - name: Smoke test DEV
         if: ${{ github.ref == 'refs/heads/dev' }}
         run: |
