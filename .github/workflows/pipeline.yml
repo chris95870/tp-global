@@ -110,30 +110,35 @@ jobs:
           ssh-keygen -yf /tmp/id_prod >/dev/null 2>&1 || { echo "::error::PROD key invalide ou chiffrée (passphrase)."; exit 1; }
           ssh-add /tmp/id_prod
 
-      # Inventaire CI basé sur les hôtes RÉELS (secrets DEV_HOST/PROD_HOST)
+      # Inventaire CI basé sur les hôtes réels (secrets DEV_HOST/PROD_HOST)
       - name: Generate CI inventory
         id: ciinv
+        env:
+          DEV_HOST: ${{ secrets.DEV_HOST }}
+          PROD_HOST: ${{ secrets.PROD_HOST }}
         run: |
+          set -e
           mkdir -p ansible/inventory
-          if [ "${{ github.ref }}" = "refs/heads/dev" ]; then
-            : "${{ secrets.DEV_HOST:?Missing DEV_HOST secret}}"
-            echo "[web]" > ansible/inventory/ci.ini
-            echo "${{ secrets.DEV_HOST }} ansible_user=${SSH_USER} ansible_port=${PORT_DEV}" >> ansible/inventory/ci.ini
+          if [ "${GITHUB_REF}" = "refs/heads/dev" ]; then
+            : "${DEV_HOST:?Missing DEV_HOST secret}"
+            printf "[web]\n%s ansible_user=%s ansible_port=%s\n" "$DEV_HOST" "$SSH_USER" "$PORT_DEV" > ansible/inventory/ci.ini
           else
-            : "${{ secrets.PROD_HOST:?Missing PROD_HOST secret}}"
-            echo "[web]" > ansible/inventory/ci.ini
-            echo "${{ secrets.PROD_HOST }} ansible_user=${SSH_USER} ansible_port=${PORT_PROD}" >> ansible/inventory/ci.ini
+            : "${PROD_HOST:?Missing PROD_HOST secret}"
+            printf "[web]\n%s ansible_user=%s ansible_port=%s\n" "$PROD_HOST" "$SSH_USER" "$PORT_PROD" > ansible/inventory/ci.ini
           fi
           echo "path=ansible/inventory/ci.ini" >> "$GITHUB_OUTPUT"
           echo "== Generated inventory ==" && cat ansible/inventory/ci.ini
 
       - name: Seed known_hosts
+        env:
+          DEV_HOST: ${{ secrets.DEV_HOST }}
+          PROD_HOST: ${{ secrets.PROD_HOST }}
         run: |
           mkdir -p ~/.ssh
-          if [ "${{ github.ref }}" = "refs/heads/dev" ]; then
-            ssh-keyscan -p "${PORT_DEV}" "${{ secrets.DEV_HOST }}" >> ~/.ssh/known_hosts || true
+          if [ "${GITHUB_REF}" = "refs/heads/dev" ]; then
+            ssh-keyscan -p "${PORT_DEV}" "${DEV_HOST}" >> ~/.ssh/known_hosts || true
           else
-            ssh-keyscan -p "${PORT_PROD}" "${{ secrets.PROD_HOST }}" >> ~/.ssh/known_hosts || true
+            ssh-keyscan -p "${PORT_PROD}" "${PROD_HOST}" >> ~/.ssh/known_hosts || true
           fi
 
       # Déploiement
@@ -151,7 +156,7 @@ jobs:
         run: |
           ansible-playbook -i "${{ steps.ciinv.outputs.path }}" ansible/playbooks/deploy.yml --extra-vars "target_env=prod"
 
-      # Smoke tests (lance le test DEPUIS le serveur distant sur 127.0.0.1:${APP_PORT})
+      # Smoke tests (depuis l'hôte distant, sur 127.0.0.1:${APP_PORT})
       - name: Smoke test DEV
         if: ${{ github.ref == 'refs/heads/dev' }}
         run: |
