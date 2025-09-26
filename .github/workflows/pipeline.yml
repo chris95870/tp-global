@@ -71,7 +71,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install ansible
 
-      # 🔐 DEV: ssh-agent + clé (support brut OU base64)
+      # DEV: ssh-agent + clé (brute ou base64)
       - name: Start ssh-agent & add DEV key
         if: ${{ github.ref == 'refs/heads/dev' }}
         env:
@@ -87,12 +87,11 @@ jobs:
             echo "::error::Missing DEV_SSH_KEY or DEV_SSH_KEY_B64"; exit 1
           fi
           chmod 600 /tmp/id_dev
-          head -n1 /tmp/id_dev | grep -E 'BEGIN .*PRIVATE KEY' >/dev/null || { echo "::error::DEV key: en-tête invalide (attendu: BEGIN .* PRIVATE KEY)"; exit 1; }
-          # Refuse les clés chiffrées (non interactif)
-          grep -q 'ENCRYPTED' /tmp/id_dev && { echo "::error::DEV key est chiffrée (passphrase). Fournis une clé sans passphrase."; exit 1; }
+          # Validation par ssh-keygen (échoue si format invalide ou clé chiffrée)
+          ssh-keygen -yf /tmp/id_dev >/dev/null 2>&1 || { echo "::error::DEV key invalide ou chiffrée (passphrase). Fournis une clé OpenSSH non chiffrée."; exit 1; }
           ssh-add /tmp/id_dev
 
-      # 🔐 PROD: ssh-agent + clé (support brut OU base64)
+      # PROD: ssh-agent + clé (brute ou base64)
       - name: Start ssh-agent & add PROD key
         if: ${{ github.ref == 'refs/heads/main' }}
         env:
@@ -108,8 +107,7 @@ jobs:
             echo "::error::Missing PROD_SSH_KEY or PROD_SSH_KEY_B64"; exit 1
           fi
           chmod 600 /tmp/id_prod
-          head -n1 /tmp/id_prod | grep -E 'BEGIN .*PRIVATE KEY' >/dev/null || { echo "::error::PROD key: en-tête invalide (attendu: BEGIN .* PRIVATE KEY)"; exit 1; }
-          grep -q 'ENCRYPTED' /tmp/id_prod && { echo "::error::PROD key est chiffrée (passphrase). Fournis une clé sans passphrase."; exit 1; }
+          ssh-keygen -yf /tmp/id_prod >/dev/null 2>&1 || { echo "::error::PROD key invalide ou chiffrée (passphrase). Fournis une clé OpenSSH non chiffrée."; exit 1; }
           ssh-add /tmp/id_prod
 
       - name: Seed known_hosts
