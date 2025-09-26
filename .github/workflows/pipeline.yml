@@ -4,9 +4,13 @@ on:
   push:
     branches: [ dev, main ]
 
-# ⚙️ Chemin du projet Node (dossier qui contient package.json)
+# 🔧 Variables à adapter
 env:
-  WORKDIR: app
+  WORKDIR: app            # dossier qui contient package.json
+  HOST_DEV: 127.0.0.1     # hôte serveur DEV
+  HOST_PROD: 127.0.0.1    # hôte serveur PROD
+  PORT_DEV: "2222"        # port SSH DEV
+  PORT_PROD: "2200"       # port SSH PROD
 
 jobs:
   build-test-deploy:
@@ -15,7 +19,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # Debug utile pour valider les chemins
+      # Debug utile pour vérifier les chemins
       - name: Debug paths
         run: |
           echo "PWD=$(pwd)"
@@ -23,7 +27,6 @@ jobs:
           ls -la
           ls -la "$WORKDIR" || true
 
-      # Détection du lockfile pour éviter l'erreur "Some specified paths were not resolved"
       - name: Detect lockfile
         id: lf
         run: |
@@ -33,7 +36,7 @@ jobs:
             echo "found=false" >> "$GITHUB_OUTPUT"
           fi
 
-      # Node + cache npm SI le lockfile existe
+      # Node + cache npm SI lockfile existe
       - name: Setup Node (with cache)
         if: ${{ steps.lf.outputs.found == 'true' }}
         uses: actions/setup-node@v4
@@ -42,7 +45,7 @@ jobs:
           cache: 'npm'
           cache-dependency-path: ${{ env.WORKDIR }}/package-lock.json
 
-      # Node SANS cache sinon (évite l'erreur de chemins non résolus)
+      # Sinon sans cache
       - name: Setup Node (no cache)
         if: ${{ steps.lf.outputs.found == 'false' }}
         uses: actions/setup-node@v4
@@ -73,7 +76,7 @@ jobs:
         working-directory: ${{ env.WORKDIR }}
         run: npm run build --if-present
 
-      # -------- Déploiement Ansible (cond. par branche) --------
+      # -------- Déploiement Ansible --------
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
@@ -84,17 +87,19 @@ jobs:
           python -m pip install --upgrade pip
           pip install ansible
 
+      # ⬇️ Ajout de la clé SSH depuis les secrets + log de la clé publique
       - name: Add SSH key
         uses: webfactory/ssh-agent@v0.9.0
         with:
           ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
+          log-public-key: true
 
-      # Optionnel: pré-remplir known_hosts (adapte host/ports à ton infra)
+      # Pré-remplir known_hosts pour éviter les prompts (adapter HOST/PORT)
       - name: Seed known_hosts
         run: |
           mkdir -p ~/.ssh
-          ssh-keyscan -p 2222 127.0.0.1 >> ~/.ssh/known_hosts || true
-          ssh-keyscan -p 2200 127.0.0.1 >> ~/.ssh/known_hosts || true
+          ssh-keyscan -p "$PORT_DEV" "$HOST_DEV" >> ~/.ssh/known_hosts || true
+          ssh-keyscan -p "$PORT_PROD" "$HOST_PROD" >> ~/.ssh/known_hosts || true
 
       # Deploy DEV si push sur dev
       - name: Deploy to DEV
