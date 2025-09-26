@@ -4,7 +4,6 @@ on:
   push:
     branches: [ dev, main ]
 
-# Variables à adapter
 env:
   WORKDIR: app
   HOST_DEV: 127.0.0.1
@@ -85,21 +84,39 @@ jobs:
           python -m pip install --upgrade pip
           pip install ansible
 
-      # 🔐 Charger la clé DEV uniquement sur la branche dev
-      - name: Add SSH key (DEV)
+      # 🔐 Démarrage ssh-agent + ajout de la clé DEV (branche dev)
+      - name: Start ssh-agent & add DEV key
         if: ${{ github.ref == 'refs/heads/dev' }}
-        uses: webfactory/ssh-agent@v0.9.0
-        with:
-          ssh-private-key: ${{ secrets.DEV_SSH_KEY }}
-          log-public-key: true
+        env:
+          DEV_SSH_KEY: ${{ secrets.DEV_SSH_KEY }}
+        run: |
+          if [ -z "$DEV_SSH_KEY" ]; then
+            echo "::error::Missing secret DEV_SSH_KEY"
+            exit 1
+          fi
+          eval "$(ssh-agent -s)"
+          # Écrit la clé, supprime les \r (copie Windows), fixe les permissions
+          printf '%s\n' "$DEV_SSH_KEY" | tr -d '\r' > /tmp/id_dev
+          chmod 600 /tmp/id_dev
+          # (Optionnel) vérifie l'entête
+          head -n1 /tmp/id_dev | grep -E 'BEGIN (OPENSSH|RSA) PRIVATE KEY' >/dev/null || { echo "::error::DEV_SSH_KEY: format invalide"; exit 1; }
+          ssh-add /tmp/id_dev
 
-      # 🔐 Charger la clé PROD uniquement sur la branche main
-      - name: Add SSH key (PROD)
+      # 🔐 Démarrage ssh-agent + ajout de la clé PROD (branche main)
+      - name: Start ssh-agent & add PROD key
         if: ${{ github.ref == 'refs/heads/main' }}
-        uses: webfactory/ssh-agent@v0.9.0
-        with:
-          ssh-private-key: ${{ secrets.PROD_SSH_KEY }}
-          log-public-key: true
+        env:
+          PROD_SSH_KEY: ${{ secrets.PROD_SSH_KEY }}
+        run: |
+          if [ -z "$PROD_SSH_KEY" ]; then
+            echo "::error::Missing secret PROD_SSH_KEY"
+            exit 1
+          fi
+          eval "$(ssh-agent -s)"
+          printf '%s\n' "$PROD_SSH_KEY" | tr -d '\r' > /tmp/id_prod
+          chmod 600 /tmp/id_prod
+          head -n1 /tmp/id_prod | grep -E 'BEGIN (OPENSSH|RSA) PRIVATE KEY' >/dev/null || { echo "::error::PROD_SSH_KEY: format invalide"; exit 1; }
+          ssh-add /tmp/id_prod
 
       - name: Seed known_hosts
         run: |
