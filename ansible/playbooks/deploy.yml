@@ -1,0 +1,29 @@
+---
+- name: Deploy to {{ target_env | default('dev') }}
+  hosts: web
+  become: true
+  gather_facts: false
+
+  tasks:
+    - name: Show environment
+      debug:
+        msg: "Deploying to {{ target_env }}"
+
+    # Exemple : déployer un artefact construit par la CI
+    # - name: Create app dir
+    #   file:
+    #     path: /opt/myapp
+    #     state: directory
+    #     owner: devops
+    #     group: devops
+    #
+    # - name: Sync build (remplace par ce dont tu as besoin)
+    #   synchronize:
+    #     src: "{{ lookup('env','GITHUB_WORKSPACE') }}/app/dist/"
+    #     dest: /opt/myapp/
+    #   delegate_to: localhost
+
+    # - name: Restart service (exemple)
+    #   systemd:
+    #     name: myapp
+    #     state: restarted
