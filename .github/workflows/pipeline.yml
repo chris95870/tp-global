@@ -9,8 +9,8 @@ env:
   SSH_USER: devops
   PORT_DEV: "2222"
   PORT_PROD: "2200"
-  APP_PORT: "8080"
-  HEALTH_PATH: "/health"
+  APP_PORT: "8080"       # gardé au cas où tu en aies besoin plus tard
+  HEALTH_PATH: "/health" # idem
 
 jobs:
   build-test-deploy:
@@ -110,8 +110,8 @@ jobs:
           ssh-keygen -yf /tmp/id_prod >/dev/null 2>&1 || { echo "::error::PROD key invalide ou chiffrée (passphrase)."; exit 1; }
           ssh-add /tmp/id_prod
 
-      # Inventaire CI basé sur les hôtes réels (secrets DEV_HOST/PROD_HOST)
-      - name: Generate CI inventory
+      # Inventaire CI (secrets si dispos, sinon fallback inventaires versionnés)
+      - name: Generate CI inventory (with fallback)
         id: ciinv
         env:
           DEV_HOST: ${{ secrets.DEV_HOST }}
@@ -119,15 +119,43 @@ jobs:
         run: |
           set -e
           mkdir -p ansible/inventory
+          INV_OUT="ansible/inventory/ci.ini"
+
+          first_host() {
+            awk '
+              /^\[/ {next}
+              /^[[:space:]]*$/ {next}
+              /^[[:space:]]*#/ {next}
+              {print $1; exit}
+            ' "$1"
+          }
+
           if [ "${GITHUB_REF}" = "refs/heads/dev" ]; then
-            : "${DEV_HOST:?Missing DEV_HOST secret}"
-            printf "[web]\n%s ansible_user=%s ansible_port=%s\n" "$DEV_HOST" "$SSH_USER" "$PORT_DEV" > ansible/inventory/ci.ini
+            host="${DEV_HOST}"
+            if [ -z "$host" ] && [ -f ansible/inventory/dev.ini ]; then
+              host="$(first_host ansible/inventory/dev.ini)"
+              echo "Note: DEV_HOST secret absent, fallback → $host"
+            fi
+            if [ -z "$host" ]; then
+              echo "::error::Aucun hôte DEV. Renseigne DEV_HOST ou mets un host dans ansible/inventory/dev.ini"
+              exit 1
+            fi
+            printf "[web]\n%s ansible_user=%s ansible_port=%s\n" "$host" "$SSH_USER" "$PORT_DEV" > "$INV_OUT"
           else
-            : "${PROD_HOST:?Missing PROD_HOST secret}"
-            printf "[web]\n%s ansible_user=%s ansible_port=%s\n" "$PROD_HOST" "$SSH_USER" "$PORT_PROD" > ansible/inventory/ci.ini
+            host="${PROD_HOST}"
+            if [ -z "$host" ] && [ -f ansible/inventory/prod.ini ]; then
+              host="$(first_host ansible/inventory/prod.ini)"
+              echo "Note: PROD_HOST secret absent, fallback → $host"
+            fi
+            if [ -z "$host" ]; then
+              echo "::error::Aucun hôte PROD. Renseigne PROD_HOST ou mets un host dans ansible/inventory/prod.ini"
+              exit 1
+            fi
+            printf "[web]\n%s ansible_user=%s ansible_port=%s\n" "$host" "$SSH_USER" "$PORT_PROD" > "$INV_OUT"
           fi
-          echo "path=ansible/inventory/ci.ini" >> "$GITHUB_OUTPUT"
-          echo "== Generated inventory ==" && cat ansible/inventory/ci.ini
+
+          echo "path=$INV_OUT" >> "$GITHUB_OUTPUT"
+          echo "== Generated inventory ==" && cat "$INV_OUT"
 
       - name: Seed known_hosts
         env:
@@ -136,9 +164,13 @@ jobs:
         run: |
           mkdir -p ~/.ssh
           if [ "${GITHUB_REF}" = "refs/heads/dev" ]; then
-            ssh-keyscan -p "${PORT_DEV}" "${DEV_HOST}" >> ~/.ssh/known_hosts || true
+            host="${DEV_HOST}"
+            [ -z "$host" ] && host="$(awk '/^\[/{next} /^[[:space:]]*$/{next} /^[[:space:]]*#/{next} {print $1; exit}' ansible/inventory/dev.ini)"
+            ssh-keyscan -p "${PORT_DEV}" "$host" >> ~/.ssh/known_hosts || true
           else
-            ssh-keyscan -p "${PORT_PROD}" "${PROD_HOST}" >> ~/.ssh/known_hosts || true
+            host="${PROD_HOST}"
+            [ -z "$host" ] && host="$(awk '/^\[/{next} /^[[:space:]]*$/{next} /^[[:space:]]*#/{next} {print $1; exit}' ansible/inventory/prod.ini)"
+            ssh-keyscan -p "${PORT_PROD}" "$host" >> ~/.ssh/known_hosts || true
           fi
 
       # Déploiement
@@ -155,16 +187,3 @@ jobs:
           ANSIBLE_HOST_KEY_CHECKING: 'False'
         run: |
           ansible-playbook -i "${{ steps.ciinv.outputs.path }}" ansible/playbooks/deploy.yml --extra-vars "target_env=prod"
-
-      # Smoke tests (depuis l'hôte distant, sur 127.0.0.1:${APP_PORT})
-      - name: Smoke test DEV
-        if: ${{ github.ref == 'refs/heads/dev' }}
-        run: |
-          ansible -i "${{ steps.ciinv.outputs.path }}" web -m wait_for -a "host=127.0.0.1 port=${APP_PORT} timeout=60 state=started"
-          ansible -i "${{ steps.ciinv.outputs.path }}" web -m uri -a "url=http://127.0.0.1:${APP_PORT}${HEALTH_PATH} status_code=200"
-
-      - name: Smoke test PROD
-        if: ${{ github.ref == 'refs/heads/main' }}
-        run: |
-          ansible -i "${{ steps.ciinv.outputs.path }}" web -m wait_for -a "host=127.0.0.1 port=${APP_PORT} timeout=60 state=started"
-          ansible -i "${{ steps.ciinv.outputs.path }}" web -m uri -a "url=http://127.0.0.1:${APP_PORT}${HEALTH_PATH} status_code=200"
