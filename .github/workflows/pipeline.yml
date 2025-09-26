@@ -1,11 +1,11 @@
-name: CI-CD Multi-Env
+name: CI/CD
 
 on:
   push:
-    branches: [ "dev", "main" ]
+    branches: [ dev, main ]
 
 jobs:
-  build-and-deploy:
+  build-test-deploy:
     runs-on: ubuntu-latest
 
     steps:
@@ -15,41 +15,70 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: '20'
+          cache: 'npm'
+          # si ton lockfile est ailleurs, ajoute: cache-dependency-path: path/to/package-lock.json
 
-      - name: Install & Test
-        working-directory: app
-        run: |
-          npm ci
-          npm test
-          npm run build
+      # Install dépendances
+      - name: Install deps (ci si lockfile)
+        if: ${{ hashFiles('**/package-lock.json') != '' }}
+        run: npm ci --no-audit --no-fund
 
+      - name: Install deps (fallback sans lockfile)
+        if: ${{ hashFiles('**/package-lock.json') == '' }}
+        run: npm install --no-audit --no-fund
+
+      # Lint & Tests
+      - name: Lint
+        run: npm run lint --if-present
+
+      - name: Tests
+        run: npm test --if-present
+
+      # (optionnel) Build
+      - name: Build
+        run: npm run build --if-present
+
+      # --- Déploiement avec Ansible (conditions de branche) ---
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.x"
+          python-version: '3.x'
 
+        # Installe Ansible
       - name: Install Ansible
-        run: pip install ansible
+        run: |
+          python -m pip install --upgrade pip
+          pip install ansible
 
+        # Charge la clé SSH de déploiement (à stocker dans secrets)
       - name: Add SSH key
         uses: webfactory/ssh-agent@v0.9.0
         with:
-          ssh-private-key: |
-            ${{ github.ref_name == 'main' && secrets.PROD_SSH_KEY || secrets.DEV_SSH_KEY }}
+          ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
 
-      - name: SSH known_hosts
+        # (facultatif) Prépare known_hosts pour éviter les prompts
+      - name: Seed known_hosts
         run: |
           mkdir -p ~/.ssh
+          # Adapté à ton lab: dev sur 2222, prod sur 2200 (modifie pour tes hôtes réels)
           ssh-keyscan -p 2222 127.0.0.1 >> ~/.ssh/known_hosts || true
           ssh-keyscan -p 2200 127.0.0.1 >> ~/.ssh/known_hosts || true
 
-      - name: Deploy DEV or PROD
+      # Deploy DEV si push sur la branche dev
+      - name: Deploy to DEV
+        if: ${{ github.ref == 'refs/heads/dev' }}
+        env:
+          ANSIBLE_HOST_KEY_CHECKING: 'False'
         run: |
-          if [ "${{ github.ref_name }}" = "dev" ]; then
-            ansible -i ansible/inventory/dev.ini web -m ping
-            ansible-playbook -i ansible/inventory/dev.ini ansible/playbooks/deploy-dev.yml
-          else
-            ansible -i ansible/inventory/prod.ini web -m ping
-            ansible-playbook -i ansible/inventory/prod.ini ansible/playbooks/deploy-prod.yml
-          fi
+          ansible-playbook -i ansible/inventory/dev.ini ansible/playbooks/deploy.yml \
+            --extra-vars "target_env=dev"
+
+      # Deploy PROD si push sur la branche main
+      - name: Deploy to PROD
+        if: ${{ github.ref == 'refs/heads/main' }}
+        env:
+          ANSIBLE_HOST_KEY_CHECKING: 'False'
+        run: |
+          ansible-playbook -i ansible/inventory/prod.ini ansible/playbooks/deploy.yml \
+            --extra-vars "target_env=prod"
